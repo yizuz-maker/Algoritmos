@@ -1,57 +1,54 @@
 import socket 
+from concurrent.futures import ThreadPoolExecutor
 from scanner.banner_grabbing import obtener_banner, decodificar_banner, obtener_banner_http, determinar_http_service
-"""
-Escanea los puertos de una IP para determinar su estado y obtener el banner del servicio si está abierto.
 
-@param ip La dirección IP a escanear.
-@param puertos Una lista de números de puertos a comprobar.
-@return Una lista de tuplas con el formato (puerto, estado, banner), donde:
-        - estado es 'abierto' o 'cerrado'
-        - banner contiene una cadena con información del servicio (vacía si está cerrado)
-"""
-def escanear_puertos(ip, puertos):
-    resultados = []
+def escanear_puerto(ip, puerto):
     banner_decoded = ""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(2)  # Reducimos el timeout para mayor velocidad
 
-    for puerto in puertos:
-        banner_decoded = ""
+    try:
+        resultado = sock.connect_ex((ip, puerto))  
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5)
+        if resultado == 0:
+            estado = 'abierto'
 
-        try:
-            resultado = sock.connect_ex((ip, puerto))  
-
-            if resultado == 0:
-                estado = 'abierto'
-
-                if puerto == 80:
-                    sock = obtener_banner_http(ip, sock)
-                    banner_raw = obtener_banner(sock)
-                    banner_dirty = decodificar_banner(banner_raw)
-                    banner_decoded = determinar_http_service(banner_dirty)
-                else:
+            if puerto == 80:
+                sock = obtener_banner_http(ip, sock)
+                banner_raw = obtener_banner(sock)
+                banner_dirty = decodificar_banner(banner_raw)
+                banner_decoded = determinar_http_service(banner_dirty)
+            else:
+                try:
                     banner_raw = obtener_banner(sock)
                     banner_decoded = decodificar_banner(banner_raw)
+                except:
+                    banner_decoded = ""
 
-                resultados.append((puerto, estado, banner_decoded))
-            else:
-                estado = 'cerrado'
-                resultados.append((puerto, estado, banner_decoded))
-
-        except socket.timeout:
-
+            return (puerto, estado, banner_decoded)
+        else:
             estado = 'cerrado'
-            resultados.append((puerto, estado, banner_decoded))
-            print(f"Timeout al intentar conectar al puerto {puerto} en {ip}")
+            return (puerto, estado, banner_decoded)
 
-        except socket.error as e:
+    except (socket.timeout, socket.error) as e:
+        estado = 'cerrado'
+        return (puerto, estado, banner_decoded)
 
-            estado = 'cerrado'
-            resultados.append((puerto, estado, banner_decoded))
-            print(f"Error de socket al intentar conectar al puerto {puerto} en {ip}: {e}")
+    finally:
+        sock.close()
 
-        finally:
-            sock.close()  # Cerrar el socket
+def escanear_puertos(ip, puertos):
+    resultados = []
+    max_workers = min(100, len(puertos))  # Limitamos el número máximo de hilos
 
-    return resultados
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(escanear_puerto, ip, puerto) for puerto in puertos]
+        for future in futures:
+            try:
+                resultado = future.result()
+                if resultado:
+                    resultados.append(resultado)
+            except Exception as e:
+                print(f"Error en el escaneo: {e}")
+
+    return sorted(resultados, key=lambda x: x[0])  # Ordenamos por número de puerto
